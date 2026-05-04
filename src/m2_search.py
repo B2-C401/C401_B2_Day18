@@ -178,7 +178,7 @@ if __name__ == "__main__":
     ]
     dense.index(CHUNKS)
     
-    # Giờ bạn đã có thể tìm kiếm:
+    # Giờ bạn đã có thể tìm kiếm: nha nha nha
     results = dense.search("Nhân viên được nghỉ phép năm")
     print("\nDense Search Results:")
     for r in results:
