@@ -1,0 +1,13 @@
+python-dotenv
+openai
+qdrant-client
+sentence-transformers
+underthesea
+rank-bm25
+ragas
+datasets
+flashrank
+FlagEmbedding
+pytest
+numpy
+pandas
