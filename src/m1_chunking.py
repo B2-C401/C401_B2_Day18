@@ -7,6 +7,7 @@ So sánh với basic chunking (baseline) để thấy improvement.
 Test: pytest tests/test_m1.py
 """
 
+from pydoc import doc
 import os, sys, glob, re
 from dataclasses import dataclass, field
 
@@ -158,10 +159,9 @@ def chunk_semantic(text: str, threshold: float = SEMANTIC_THRESHOLD,
         use_embeddings = True
 
         def cosine_sim(vec_a, vec_b) -> float:
-            den = norm(vec_a) * norm(vec_b)
-            if den == 0:
+            if norm(vec_a) == 0 or norm(vec_b) == 0:
                 return 0.0
-            return float(dot(vec_a, vec_b) / den)
+            return float(dot(vec_a, vec_b) / (norm(vec_a) * norm(vec_b)))
     except Exception:
         use_embeddings = False
 
@@ -176,7 +176,7 @@ def chunk_semantic(text: str, threshold: float = SEMANTIC_THRESHOLD,
             chunks.append(
                 Chunk(
                     text=" ".join(current_group).strip(),
-                    metadata={**metadata, "chunk_index": len(chunks), "strategy": "semantic"},
+                    metadata={**metadata, "chunk_index": len(chunks), "strategy": "semantic", "similarity": sim},
                 )
             )
             current_group = []
@@ -185,96 +185,151 @@ def chunk_semantic(text: str, threshold: float = SEMANTIC_THRESHOLD,
     if current_group:
         chunks.append(
             Chunk(
-                text=" ".join(current_group).strip(),
-                metadata={**metadata, "chunk_index": len(chunks), "strategy": "semantic"},
+                text=" ".join(current_group),
+                metadata={**metadata, "chunk_index": len(chunks), "strategy": "semantic","similarity": sim},
             )
         )
+    print(chunks)
     return chunks
 
 
 # ─── Strategy 2: Hierarchical Chunking ──────────────────
 
 
-def chunk_hierarchical(text: str, parent_size: int = HIERARCHICAL_PARENT_SIZE,
-                       child_size: int = HIERARCHICAL_CHILD_SIZE,
+# def chunk_hierarchical(text: str, parent_size: int = HIERARCHICAL_PARENT_SIZE,
+#                        child_size: int = HIERARCHICAL_CHILD_SIZE,
+#                        metadata: dict | None = None) -> tuple[list[Chunk], list[Chunk]]:
+#     """
+#     Parent-child hierarchy: retrieve child (precision) → return parent (context).
+#     Đây là default recommendation cho production RAG.
+
+#     Args:
+#         text: Input text.
+#         parent_size: Chars per parent chunk.
+#         child_size: Chars per child chunk.
+#         metadata: Metadata gắn vào mỗi chunk.
+
+#     Returns:
+#         (parents, children) — mỗi child có parent_id link đến parent.
+#     """
+#     metadata = metadata or {}
+#     # TODO: Implement hierarchical chunking
+#     # 1. Split text into parents:
+#     #    paragraphs = text.split("\n\n")
+#     #    Gom paragraphs cho đến khi đạt parent_size → 1 parent chunk
+#     #    pid = f"parent_{p_index}"
+#     #    parent = Chunk(text=parent_text, metadata={**metadata, "chunk_type": "parent", "parent_id": pid})
+#     #
+#     # 2. Split each parent into children:
+#     #    Slide window child_size trên parent text
+#     #    child = Chunk(text=child_text, metadata={**metadata, "chunk_type": "child"}, parent_id=pid)
+#     #
+#     # 3. Return (parents_list, children_list)
+#     #
+#     # Production pattern:
+#     #   - Index CHILDREN vào vector DB (nhỏ → embedding chính xác)
+#     #   - Khi retrieve child → lookup parent_id → trả parent cho LLM (đủ context)
+#     if not text.strip():
+#         return [], []
+
+#     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+#     parents: list[Chunk] = []
+#     children: list[Chunk] = []
+
+#     current_parent_parts: list[str] = []
+#     current_len = 0
+#     for para in paragraphs:
+#         para_len = len(para)
+#         if current_parent_parts and current_len + para_len > parent_size:
+#             parent_text = "\n\n".join(current_parent_parts).strip()
+#             pid = f"parent_{len(parents)}"
+#             parents.append(
+#                 Chunk(
+#                     text=parent_text,
+#                     metadata={**metadata, "chunk_type": "parent", "parent_id": pid},
+#                 )
+#             )
+#             current_parent_parts = []
+#             current_len = 0
+
+#         current_parent_parts.append(para)
+#         current_len += para_len
+
+#     if current_parent_parts:
+#         parent_text = "\n\n".join(current_parent_parts).strip()
+#         pid = f"parent_{len(parents)}"
+#         parents.append(
+#             Chunk(
+#                 text=parent_text,
+#                 metadata={**metadata, "chunk_type": "parent", "parent_id": pid},
+#             )
+#         )
+
+#     for parent in parents:
+#         pid = parent.metadata["parent_id"]
+#         parent_text = parent.text
+#         for start in range(0, len(parent_text), child_size):
+#             child_text = parent_text[start:start + child_size].strip()
+#             if not child_text:
+#                 continue
+#             children.append(
+#                 Chunk(
+#                     text=child_text,
+#                     metadata={**metadata, "chunk_type": "child", "chunk_index": len(children)},
+#                     parent_id=pid,
+#                 )
+#             )
+
+#     return parents, children
+
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+def chunk_hierarchical(text: str, parent_size: int = 1000, 
+                       child_size: int = 200, 
                        metadata: dict | None = None) -> tuple[list[Chunk], list[Chunk]]:
-    """
-    Parent-child hierarchy: retrieve child (precision) → return parent (context).
-    Đây là default recommendation cho production RAG.
-
-    Args:
-        text: Input text.
-        parent_size: Chars per parent chunk.
-        child_size: Chars per child chunk.
-        metadata: Metadata gắn vào mỗi chunk.
-
-    Returns:
-        (parents, children) — mỗi child có parent_id link đến parent.
-    """
     metadata = metadata or {}
-    # TODO: Implement hierarchical chunking
-    # 1. Split text into parents:
-    #    paragraphs = text.split("\n\n")
-    #    Gom paragraphs cho đến khi đạt parent_size → 1 parent chunk
-    #    pid = f"parent_{p_index}"
-    #    parent = Chunk(text=parent_text, metadata={**metadata, "chunk_type": "parent", "parent_id": pid})
-    #
-    # 2. Split each parent into children:
-    #    Slide window child_size trên parent text
-    #    child = Chunk(text=child_text, metadata={**metadata, "chunk_type": "child"}, parent_id=pid)
-    #
-    # 3. Return (parents_list, children_list)
-    #
-    # Production pattern:
-    #   - Index CHILDREN vào vector DB (nhỏ → embedding chính xác)
-    #   - Khi retrieve child → lookup parent_id → trả parent cho LLM (đủ context)
     if not text.strip():
         return [], []
 
+    # --- BƯỚC 1: TẠO PARENTS (Giữ nguyên logic của bạn) ---
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
     parents: list[Chunk] = []
     children: list[Chunk] = []
 
     current_parent_parts: list[str] = []
     current_len = 0
+    
     for para in paragraphs:
-        para_len = len(para)
-        if current_parent_parts and current_len + para_len > parent_size:
-            parent_text = "\n\n".join(current_parent_parts).strip()
+        if current_parent_parts and current_len + len(para) > parent_size:
             pid = f"parent_{len(parents)}"
-            parents.append(
-                Chunk(
-                    text=parent_text,
-                    metadata={**metadata, "chunk_type": "parent", "parent_id": pid},
-                )
-            )
-            current_parent_parts = []
-            current_len = 0
-
+            parent_text = "\n\n".join(current_parent_parts).strip()
+            parents.append(Chunk(text=parent_text, metadata={**metadata, "chunk_type": "parent", "parent_id": pid}))
+            current_parent_parts, current_len = [], 0
         current_parent_parts.append(para)
-        current_len += para_len
+        current_len += len(para)
 
     if current_parent_parts:
-        parent_text = "\n\n".join(current_parent_parts).strip()
         pid = f"parent_{len(parents)}"
-        parents.append(
-            Chunk(
-                text=parent_text,
-                metadata={**metadata, "chunk_type": "parent", "parent_id": pid},
-            )
-        )
+        parents.append(Chunk(text="\n\n".join(current_parent_parts).strip(), metadata={**metadata, "chunk_type": "parent", "parent_id": pid}))
+
+    # --- BƯỚC 2: TẠO CHILDREN THÔNG MINH (Sử dụng TextSplitter) ---
+    # Cấu hình splitter để không cắt ngang từ
+    child_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=child_size,
+        chunk_overlap=20, # Thêm một chút gối đầu để giữ ngữ cảnh giữa các child
+        separators=["\n\n", "\n", ". ", " ", ""] # Thứ tự ưu tiên ngắt
+    )
 
     for parent in parents:
         pid = parent.metadata["parent_id"]
-        parent_text = parent.text
-        for start in range(0, len(parent_text), child_size):
-            child_text = parent_text[start:start + child_size].strip()
-            if not child_text:
-                continue
+        # Splitter sẽ tự động chia nhỏ parent thành các đoạn con hợp lý
+        child_texts = child_splitter.split_text(parent.text)
+        
+        for i, c_text in enumerate(child_texts):
             children.append(
                 Chunk(
-                    text=child_text,
-                    metadata={**metadata, "chunk_type": "child", "chunk_index": len(children)},
+                    text=c_text.strip(),
+                    metadata={**metadata, "chunk_type": "child", "chunk_index": i},
                     parent_id=pid,
                 )
             )
@@ -447,8 +502,15 @@ def compare_strategies(documents: list[dict]) -> dict:
 
 
 if __name__ == "__main__":
-    docs = load_documents()
-    print(f"Loaded {len(docs)} documents")
-    results = compare_strategies(docs)
-    for name, stats in results.items():
-        print(f"  {name}: {stats}")
+    docs = load_documents(data_dir='data')
+    for doc in docs:
+        text = doc.get("text", "")
+        doc_meta = doc.get("metadata", {})
+        parents, children = chunk_hierarchical(text, metadata=doc_meta)
+        print(f"Parents: {parents}")
+        print(f"Children: {children}")
+        # print(f"Loaded {len(docs)} documents")
+    # print(f"Loaded {len(docs)} documents")
+    # results = compare_strategies(docs)
+    # for name, stats in results.items():
+    #     print(f"  {name}: {stats}")

@@ -9,8 +9,8 @@ import sys, os, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.m1_chunking import load_documents, chunk_basic
-from src.m2_search import DenseSearch
+from src.m1_chunking import load_documents, chunk_basic, chunk_semantic
+from src.m2_search import DenseSearch, HybridSearch
 from src.m4_eval import load_test_set, evaluate_ragas, save_report
 from config import NAIVE_COLLECTION
 

@@ -27,47 +27,79 @@ def load_test_set(path: str = TEST_SET_PATH) -> list[dict]:
 
 def evaluate_ragas(questions: list[str], answers: list[str],
                    contexts: list[list[str]], ground_truths: list[str]) -> dict:
-    """Run RAGAS evaluation."""
-    from ragas import evaluate
-    from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall
-    from datasets import Dataset
-
-    dataset = Dataset.from_dict({
-        "question": questions, 
-        "answer": answers,
-        "contexts": contexts, 
-        "ground_truth": ground_truths,
-    })
-
+    """Run RAGAS evaluation (compatible with ragas >= 0.2)."""
+    from config import OPENAI_API_KEY
     try:
-        result = evaluate(dataset, metrics=[faithfulness, answer_relevancy,
-                                            context_precision, context_recall])
+        from ragas import evaluate, EvaluationDataset
+        from ragas.metrics import Faithfulness, ResponseRelevancy, LLMContextPrecisionWithReference, LLMContextRecall
+        from ragas.llms import LangchainLLMWrapper
+        from ragas.embeddings import LangchainEmbeddingsWrapper
+        from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+
+        llm = LangchainLLMWrapper(ChatOpenAI(model="gpt-4o-mini", api_key=OPENAI_API_KEY))
+        emb = LangchainEmbeddingsWrapper(OpenAIEmbeddings(api_key=OPENAI_API_KEY))
+
+        metrics = [
+            Faithfulness(llm=llm),
+            ResponseRelevancy(llm=llm, embeddings=emb),
+            LLMContextPrecisionWithReference(llm=llm),
+            LLMContextRecall(llm=llm),
+        ]
+
+        dataset = EvaluationDataset.from_list([
+            {"user_input": q, "response": a, "retrieved_contexts": ctx, "reference": gt}
+            for q, a, ctx, gt in zip(questions, answers, contexts, ground_truths)
+        ])
+
+        result = evaluate(dataset=dataset, metrics=metrics)
         df = result.to_pandas()
 
-        per_question = []
-        for _, row in df.iterrows():
-            per_question.append(
-                EvalResult(
-                    question=row["question"],
-                    answer=row["answer"],
-                    contexts=row["contexts"],
-                    ground_truth=row["ground_truth"],
-                    faithfulness=row["faithfulness"],
-                    answer_relevancy=row["answer_relevancy"],
-                    context_precision=row["context_precision"],
-                    context_recall=row["context_recall"],
-                )
+        # Find columns by keyword (RAGAS 0.2+ renamed columns)
+        def find_col(keywords):
+            for c in df.columns:
+                if any(k in c.lower() for k in keywords):
+                    return c
+            return None
+
+        col_q  = find_col(["user_input", "question"])
+        col_a  = find_col(["response", "answer"])
+        col_ctx = find_col(["retrieved_contexts", "contexts"])
+        col_gt = find_col(["reference", "ground_truth"])
+        col_f  = find_col(["faithfulness"])
+        col_ar = find_col(["relevancy", "relevance"])
+        col_cp = find_col(["precision"])
+        col_cr = find_col(["recall"])
+
+        def safe_float(row, col):
+            return float(row.get(col, 0.0) or 0.0) if col else 0.0
+
+        def safe_mean(col):
+            return float(df[col].dropna().mean()) if col and col in df.columns else 0.0
+
+        per_question = [
+            EvalResult(
+                question=row.get(col_q, ""),
+                answer=row.get(col_a, ""),
+                contexts=row.get(col_ctx, []),
+                ground_truth=row.get(col_gt, ""),
+                faithfulness=safe_float(row, col_f),
+                answer_relevancy=safe_float(row, col_ar),
+                context_precision=safe_float(row, col_cp),
+                context_recall=safe_float(row, col_cr),
             )
+            for _, row in df.iterrows()
+        ]
 
         return {
-            "faithfulness": float(result.get("faithfulness", 0.0)),
-            "answer_relevancy": float(result.get("answer_relevancy", 0.0)),
-            "context_precision": float(result.get("context_precision", 0.0)),
-            "context_recall": float(result.get("context_recall", 0.0)),
-            "per_question": per_question,
+            "faithfulness":      safe_mean(col_f),
+            "answer_relevancy":  safe_mean(col_ar),
+            "context_precision": safe_mean(col_cp),
+            "context_recall":    safe_mean(col_cr),
+            "per_question":      per_question,
         }
+
     except Exception as e:
-        print(f"RAGAS evaluation failed (likely due to missing OpenAI key): {e}")
+        print(f"  ⚠️  RAGAS evaluation failed: {e}")
         return {"faithfulness": 0.0, "answer_relevancy": 0.0,
                 "context_precision": 0.0, "context_recall": 0.0, "per_question": []}
 
@@ -119,7 +151,7 @@ def failure_analysis(eval_results: list[EvalResult], bottom_n: int = 10) -> list
     return failures
 
 
-def save_report(results: dict, failures: list[dict], path: str = "ragas_report.json"):
+def save_report(results: dict, failures: list[dict], path: str = "ragas_report_5.json"):
     """Save evaluation report to JSON. (Đã implement sẵn)"""
     report = {
         "aggregate": {k: v for k, v in results.items() if k != "per_question"},
