@@ -14,6 +14,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (DATA_DIR, HIERARCHICAL_PARENT_SIZE, HIERARCHICAL_CHILD_SIZE,
                     SEMANTIC_THRESHOLD)
 
+_SEMANTIC_MODEL = None
+
 
 @dataclass
 class Chunk:
@@ -23,11 +25,42 @@ class Chunk:
 
 
 def load_documents(data_dir: str = DATA_DIR) -> list[dict]:
-    """Load all markdown/text files from data/. (Đã implement sẵn)"""
+    """Load markdown/text and PDF files from data/."""
     docs = []
+
+    # Load .md files
     for fp in sorted(glob.glob(os.path.join(data_dir, "*.md"))):
         with open(fp, encoding="utf-8") as f:
             docs.append({"text": f.read(), "metadata": {"source": os.path.basename(fp)}})
+
+    # Load .pdf files
+    for fp in sorted(glob.glob(os.path.join(data_dir, "*.pdf"))):
+        try:
+            from pypdf import PdfReader
+        except Exception:
+            try:
+                from PyPDF2 import PdfReader
+            except Exception:
+                continue
+
+        try:
+            reader = PdfReader(fp)
+            pages = [(page.extract_text() or "").strip() for page in reader.pages]
+            text = "\n\n".join(p for p in pages if p).strip()
+            if text:
+                docs.append(
+                    {
+                        "text": text,
+                        "metadata": {
+                            "source": os.path.basename(fp),
+                            "file_type": "pdf",
+                            "num_pages": len(reader.pages),
+                        },
+                    }
+                )
+        except Exception:
+            continue
+
     return docs
 
 
@@ -97,7 +130,66 @@ def chunk_semantic(text: str, threshold: float = SEMANTIC_THRESHOLD,
     #    # Don't forget last group
     #
     # 5. Return chunks with metadata: {"chunk_index": i, "strategy": "semantic"}
-    return []
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n\n", text) if s.strip()]
+    if not sentences:
+        return []
+
+    def lexical_cosine(a: str, b: str) -> float:
+        a_tokens = set(re.findall(r"\w+", a.lower()))
+        b_tokens = set(re.findall(r"\w+", b.lower()))
+        if not a_tokens or not b_tokens:
+            return 0.0
+        return len(a_tokens & b_tokens) / ((len(a_tokens) * len(b_tokens)) ** 0.5)
+
+    chunks: list[Chunk] = []
+
+    # Try embedding-based semantic similarity first; fallback to lexical similarity.
+    use_embeddings = False
+    embeddings = None
+    try:
+        from sentence_transformers import SentenceTransformer
+        from numpy import dot
+        from numpy.linalg import norm
+
+        global _SEMANTIC_MODEL
+        if _SEMANTIC_MODEL is None:
+            _SEMANTIC_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+        embeddings = _SEMANTIC_MODEL.encode(sentences, show_progress_bar=False)
+        use_embeddings = True
+
+        def cosine_sim(vec_a, vec_b) -> float:
+            den = norm(vec_a) * norm(vec_b)
+            if den == 0:
+                return 0.0
+            return float(dot(vec_a, vec_b) / den)
+    except Exception:
+        use_embeddings = False
+
+    current_group = [sentences[0]]
+    for i in range(1, len(sentences)):
+        if use_embeddings and embeddings is not None:
+            sim = cosine_sim(embeddings[i - 1], embeddings[i])
+        else:
+            sim = lexical_cosine(sentences[i - 1], sentences[i])
+
+        if sim < threshold:
+            chunks.append(
+                Chunk(
+                    text=" ".join(current_group).strip(),
+                    metadata={**metadata, "chunk_index": len(chunks), "strategy": "semantic"},
+                )
+            )
+            current_group = []
+        current_group.append(sentences[i])
+
+    if current_group:
+        chunks.append(
+            Chunk(
+                text=" ".join(current_group).strip(),
+                metadata={**metadata, "chunk_index": len(chunks), "strategy": "semantic"},
+            )
+        )
+    return chunks
 
 
 # ─── Strategy 2: Hierarchical Chunking ──────────────────
@@ -136,7 +228,58 @@ def chunk_hierarchical(text: str, parent_size: int = HIERARCHICAL_PARENT_SIZE,
     # Production pattern:
     #   - Index CHILDREN vào vector DB (nhỏ → embedding chính xác)
     #   - Khi retrieve child → lookup parent_id → trả parent cho LLM (đủ context)
-    return [], []
+    if not text.strip():
+        return [], []
+
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    parents: list[Chunk] = []
+    children: list[Chunk] = []
+
+    current_parent_parts: list[str] = []
+    current_len = 0
+    for para in paragraphs:
+        para_len = len(para)
+        if current_parent_parts and current_len + para_len > parent_size:
+            parent_text = "\n\n".join(current_parent_parts).strip()
+            pid = f"parent_{len(parents)}"
+            parents.append(
+                Chunk(
+                    text=parent_text,
+                    metadata={**metadata, "chunk_type": "parent", "parent_id": pid},
+                )
+            )
+            current_parent_parts = []
+            current_len = 0
+
+        current_parent_parts.append(para)
+        current_len += para_len
+
+    if current_parent_parts:
+        parent_text = "\n\n".join(current_parent_parts).strip()
+        pid = f"parent_{len(parents)}"
+        parents.append(
+            Chunk(
+                text=parent_text,
+                metadata={**metadata, "chunk_type": "parent", "parent_id": pid},
+            )
+        )
+
+    for parent in parents:
+        pid = parent.metadata["parent_id"]
+        parent_text = parent.text
+        for start in range(0, len(parent_text), child_size):
+            child_text = parent_text[start:start + child_size].strip()
+            if not child_text:
+                continue
+            children.append(
+                Chunk(
+                    text=child_text,
+                    metadata={**metadata, "chunk_type": "child", "chunk_index": len(children)},
+                    parent_id=pid,
+                )
+            )
+
+    return parents, children
 
 
 # ─── Strategy 3: Structure-Aware Chunking ────────────────
@@ -180,7 +323,45 @@ def chunk_structure_aware(text: str, metadata: dict | None = None) -> list[Chunk
     #
     # Ưu điểm: giữ nguyên tables, lists, code blocks
     # Dùng khi: corpus có structured documents (docs, API refs, manuals)
-    return []
+    if not text.strip():
+        return []
+
+    header_pattern = re.compile(r"^#{1,3}\s+.+$", flags=re.MULTILINE)
+    sections = re.split(r"(^#{1,3}\s+.+$)", text, flags=re.MULTILINE)
+
+    chunks: list[Chunk] = []
+    current_header = ""
+    current_content = ""
+
+    def flush_section() -> None:
+        if not current_content.strip() and not current_header.strip():
+            return
+        section_name = current_header.strip() or "root"
+        section_text = f"{current_header}\n{current_content}".strip()
+        chunks.append(
+            Chunk(
+                text=section_text,
+                metadata={
+                    **metadata,
+                    "section": section_name,
+                    "strategy": "structure",
+                    "chunk_index": len(chunks),
+                },
+            )
+        )
+
+    for part in sections:
+        if not part:
+            continue
+        if header_pattern.match(part.strip()):
+            flush_section()
+            current_header = part.strip()
+            current_content = ""
+        else:
+            current_content += part
+
+    flush_section()
+    return chunks
 
 
 # ─── A/B Test: Compare All Strategies ────────────────────
@@ -203,7 +384,66 @@ def compare_strategies(documents: list[dict]) -> dict:
     #    hierarchical  | 5p/15c |   256   | 100 | 2048
     #    structure     |   10   |   450   | 150 | 800
     # 4. Return results dict
-    return {}
+    def stats(chunks: list[Chunk]) -> dict:
+        lengths = [len(c.text) for c in chunks]
+        if not lengths:
+            return {"num_chunks": 0, "avg_length": 0, "min_length": 0, "max_length": 0}
+        return {
+            "num_chunks": len(chunks),
+            "avg_length": int(sum(lengths) / len(lengths)),
+            "min_length": min(lengths),
+            "max_length": max(lengths),
+        }
+
+    basic_chunks: list[Chunk] = []
+    semantic_chunks: list[Chunk] = []
+    structure_chunks: list[Chunk] = []
+    hierarchical_parents: list[Chunk] = []
+    hierarchical_children: list[Chunk] = []
+
+    for doc in documents:
+        text = doc.get("text", "")
+        doc_meta = doc.get("metadata", {})
+        basic_chunks.extend(chunk_basic(text, metadata=doc_meta))
+        semantic_chunks.extend(chunk_semantic(text, metadata=doc_meta))
+        parents, children = chunk_hierarchical(text, metadata=doc_meta)
+        hierarchical_parents.extend(parents)
+        hierarchical_children.extend(children)
+        structure_chunks.extend(chunk_structure_aware(text, metadata=doc_meta))
+
+    basic_stats = stats(basic_chunks)
+    semantic_stats = stats(semantic_chunks)
+    structure_stats = stats(structure_chunks)
+    hierarchical_stats = stats(hierarchical_children)
+    hierarchical_stats["parent_chunks"] = len(hierarchical_parents)
+    hierarchical_stats["child_chunks"] = len(hierarchical_children)
+
+    print("Strategy      | Chunks  | Avg Len | Min | Max")
+    print("-" * 47)
+    print(
+        f"basic         | {basic_stats['num_chunks']:<7} | {basic_stats['avg_length']:<7} | "
+        f"{basic_stats['min_length']:<3} | {basic_stats['max_length']}"
+    )
+    print(
+        f"semantic      | {semantic_stats['num_chunks']:<7} | {semantic_stats['avg_length']:<7} | "
+        f"{semantic_stats['min_length']:<3} | {semantic_stats['max_length']}"
+    )
+    print(
+        f"hierarchical  | {hierarchical_stats['parent_chunks']}p/{hierarchical_stats['child_chunks']}c"
+        f"{' ' * 2}| {hierarchical_stats['avg_length']:<7} | {hierarchical_stats['min_length']:<3} | "
+        f"{hierarchical_stats['max_length']}"
+    )
+    print(
+        f"structure     | {structure_stats['num_chunks']:<7} | {structure_stats['avg_length']:<7} | "
+        f"{structure_stats['min_length']:<3} | {structure_stats['max_length']}"
+    )
+
+    return {
+        "basic": basic_stats,
+        "semantic": semantic_stats,
+        "hierarchical": hierarchical_stats,
+        "structure": structure_stats,
+    }
 
 
 if __name__ == "__main__":
