@@ -1,3 +1,12 @@
 [
-  {"question": "hihi cả nhà tự tạo testset bằng cơm nhé", "ground_truth": "Không kịp tạo luôn"},
+  {"question": "Chính sách nghỉ phép của công ty là gì?", "ground_truth": "Nhân viên chính thức được nghỉ phép 12 ngày làm việc mỗi năm."},
+  {"question": "Nhân viên được phép làm thêm bao nhiêu giờ?", "ground_truth": "Không quá 4 giờ mỗi ngày, 20 giờ mỗi tháng."},
+  {"question": "Quy định về bảo vệ dữ liệu cá nhân?", "ground_truth": "Người dùng có quyền truy cập và sửa đổi dữ liệu của mình."},
+  {"question": "Chính sách VPN của công ty?", "ground_truth": "Mật khẩu phải thay đổi mỗi 90 ngày."},
+  {"question": "Nhân viên mới được hỗ trợ như thế nào?", "ground_truth": "Được cấp laptop, hướng dẫn on-boarding trong 1 tuần."},
+  {"question": "Thời gian làm việc bình thường?", "ground_truth": "9 giờ sáng đến 6 giờ chiều, thứ 2 đến thứ 6."},
+  {"question": "Tăng lương được tính theo cách nào?", "ground_truth": "Dựa trên năng lực, kết quả công việc, thâm niên."},
+  {"question": "Tối đa bao nhiêu người được nghỉ phép cùng lúc?", "ground_truth": "Không quá 30% tổng số nhân viên trong phòng."},
+  {"question": "Quy trình xin nghỉ phép?", "ground_truth": "Gửi yêu cầu cho quản lý, phê duyệt trước 3 ngày."},
+  {"question": "Cơ chế khiếu nại của nhân viên?", "ground_truth": "Liên hệ ban HR hoặc hotline nội bộ 1234."}
 ]
