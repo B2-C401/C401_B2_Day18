@@ -18,7 +18,7 @@
 ## 2. Kiến thức học được
 
 - **Khái niệm (Trang 17 - Hybrid Search & RRF Fusion):** Cách kết hợp giữa tìm kiếm truyền thống (BM25) và tìm kiếm ngữ nghĩa (Dense Vector). Thuật toán **Reciprocal Rank Fusion (RRF)** gộp 2 bảng xếp hạng riêng biệt thành một danh sách Top-K Results duy nhất bằng công thức:
-  $$score(d) = \sum \frac{1}{k+rank_i(d)}$$
+  score(d)=∑1k+ranki(d)score(d) = \sum \frac{1}{k+rank_i(d)}
 - **So sánh & Ứng dụng (Trang 18 - BM25 vs Dense):** Hiểu rõ ưu nhược điểm của từng phương pháp. BM25 thế mạnh ở việc tìm từ khóa chính xác, trong khi Dense Vector tốt ở ngữ nghĩa và từ đồng nghĩa. Với tiếng Việt, bước **tách từ (word segmentation)** bằng thư viện như `underthesea` là vô cùng quan trọng trước khi đánh chỉ mục BM25.
 - **Tối ưu hóa nâng cao (Trang 19 - Beyond RRF):** Các kỹ thuật như Tensor Fusion, Late Interaction (ColBERT), và Learned Sparse (SPLADE) để tối ưu hóa tìm kiếm sau giai đoạn RRF. Trong đó, nếu không có dữ liệu có nhãn, sự kết hợp giữa **RRF** và **Cross-encoder** là hướng đi hiệu quả và tối ưu nhất.
 - **Kết nối với code:**
